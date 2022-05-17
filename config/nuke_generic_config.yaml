@@ -1,0 +1,37 @@
+regions:
+  - TARGET_REGION # will be overridden during run time based on region parameter
+
+account-blocklist:
+- 123456789012 #prod
+
+# optional: restrict nuking to these resources
+resource-types:
+  excludes: # exclude this as will be already handled when you include S3Bucket/DynamoDBTable. Else takes a lot of time and logs get filled up
+  - S3Object
+  - DynamoDBTableItem
+  targets:
+  - IAMUser
+  - IAMUserPolicyAttachment
+  - IAMUserAccessKey
+  - S3Bucket
+  - SNSTopic
+  - SQSQueue
+
+accounts:
+  ACCOUNT: # will be overridden during run time based on account param
+    filters:
+      IAMRole:
+      - "ProdRoles"
+      - "DoNotDeleteRoles"
+      IAMUser:
+      - "admin"
+      IAMUserPolicyAttachment:
+      - property: RoleName
+        value: "admin"
+      IAMUserAccessKey:
+      - property: UserName
+        value: "admin"
+      S3Bucket:
+      - "s3://my-bucket"
+      SNSTopic: [] # delete all SNS
+      SQSQueue: [] # delete all SQS
