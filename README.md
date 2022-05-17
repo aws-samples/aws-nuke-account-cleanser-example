@@ -11,7 +11,9 @@
 $ First and Final Warning: This is a dangerous and very destructive tool and should not be deployed without fully understanding the impact it will have on the accounts you allow it to interface with.
 ```
 
-## Description 
+## Overview
+
+![infrastructure-overview](images/architecture-overview.png)
 
 * The approach covered in this pattern is suitable for customers needing an automated mechanism to clean up their obsolete resources from test or sandbox  accounts periodically.  It is quite common that customers will have a set of Dev/Sandbox accounts where developers can create and experiment with various services and resources, which are then left unattended or obsolete, and can quickly lead to high and unnecessary AWS Cost/Spending ( example: Developers created an expensive DB instance ( RDS) or EBS/EFS volume for testing and missed to terminate those resources ).
 
