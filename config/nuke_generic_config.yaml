@@ -1,4 +1,5 @@
 regions:
+  # add `global` here to include IAM entities to be nuked
   - TARGET_REGION # will be overridden during run time based on region parameter
 
 account-blocklist:
@@ -16,6 +17,7 @@ resource-types:
   - S3Bucket
   - SNSTopic
   - SQSQueue
+  - CloudTrailTrail
 
 accounts:
   ACCOUNT: # will be overridden during run time based on account param
@@ -23,8 +25,12 @@ accounts:
       IAMRole:
       - "ProdRoles"
       - "DoNotDeleteRoles"
+      - type: regex
+        value: ".*"
       IAMUser:
       - "admin"
+      - type: regex
+        value: ".*"
       IAMUserPolicyAttachment:
       - property: RoleName
         value: "admin"
@@ -33,5 +39,10 @@ accounts:
         value: "admin"
       S3Bucket:
       - "s3://my-bucket"
-      SNSTopic: [] # delete all SNS
+      CloudTrailTrail: # filter all CloudTrail
+      - type: regex
+        value: ".*"
+      SNSTopic: [] # SNS is protected based on global exception tags inside the nuke_config_update.py
+      - type: regex
+        value: ".*"
       SQSQueue: [] # delete all SQS

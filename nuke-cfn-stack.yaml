@@ -24,12 +24,15 @@ Parameters:
     Type: String
     Default: 'true'
   AWSNukeVersion:
-    Description: The aws-nuke latest version to be used from internal artifactory/S3.
+    Description: The aws-nuke latest version to be used from internal artifactory/S3. Make sure to check the latest releases
+     and any resource additions added. As you update the version, you will have to handle filtering any new resources that gets
+     updated with that new version.
     Type: String
-    Default: 2.15.0
-  NukeTopicArn:
-    Description: The SNS Topic Arn to publish the nuke output logs email
+    Default: 2.21.2
+  NukeTopicName:
+    Description: The SNS Topic name to publish the nuke output logs email
     Type: String
+    Default: nuke-cleanser-notify-topic
   Owner:
     Type: String
     Default: OpsAdmin
@@ -138,6 +141,7 @@ Resources:
   NukeCodeBuildProjectRole:
     Type: AWS::IAM::Role
     Properties:
+      RoleName: !Sub NukeCodeBuildProject-${AWS::StackName}
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -206,7 +210,7 @@ Resources:
                   - sns:GetTopicAttributes
                   - sns:Publish
                 Resource:
-                  - !Ref NukeTopicArn
+                  - !Ref NukeEmailTopic
 
   NukeCodeBuildProject:
     Type: AWS::CodeBuild::Project
@@ -230,7 +234,7 @@ Resources:
           Value: !Ref AWSNukeVersion
         - Name: Publish_TopicArn
           Type: PLAINTEXT
-          Value: !Ref NukeTopicArn
+          Value: !Ref NukeEmailTopic
         - Name: NukeS3Bucket
           Type: PLAINTEXT
           Value: !Ref 'NukeS3Bucket'
@@ -271,7 +275,7 @@ Resources:
             build:
               on-failure: CONTINUE
               commands:
-                - echo "Getting seed config file from S3";
+                - echo "Getting nuke generic config file from S3";
                 - aws s3 cp s3://$NukeS3Bucket/nuke_generic_config.yaml .
                 - echo "Updating the TARGET_REGION in the generic config from the parameter"
                 - sed -i "s/TARGET_REGION/$NukeTargetRegion/g" nuke_generic_config.yaml
@@ -282,23 +286,33 @@ Resources:
                 - echo "Running Config filter/update script";
                 - python3 nuke_config_update.py --account $account_id --region "$NukeTargetRegion";
                 - echo "Configured nuke_config.yaml";
+                - echo " ------------------------------------------------ " >> error_log.txt
                 - echo "Running Nuke on Account";
                 - |
                   if [ "$AWS_NukeDryRun" = "true" ]; then
-                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --profile nuke |tee -a aws-nuke.log; done
+                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --profile nuke 2>&1 |tee -a aws-nuke.log; done
                   elif [ "$AWS_NukeDryRun" = "false" ]; then
-                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --no-dry-run --profile nuke |tee -a aws-nuke.log; done
+                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --no-dry-run --profile nuke 2>&1 |tee -a aws-nuke.log; done
                   else
                     echo "Couldn't determine Dryrun flag...exiting"
                     exit 1
                   fi
                 - nuke_pid=$!;
                 - wait $nuke_pid;
-                - echo "Completed Nuke Process for account"
+                - echo "Checking if Nuke Process completed for account"
+                - |
+                  if cat aws-nuke.log | grep -F "Error: The specified account doesn"; then
+                    echo "Nuke errored due to no AWS account alias set up - exiting"
+                    cat aws-nuke.log >> error_log.txt
+                    exit 1
+                  else
+                    echo "Nuke completed Successfully - Continuing"
+                  fi
+
             post_build:
               commands:
                 - echo $CODEBUILD_BUILD_SUCCEEDING
-                - echo "Get current timestamp for reports naming.."
+                - echo "Get current timestamp for naming reports"
                 - BLD_START_TIME=$(date -d @$(($CODEBUILD_START_TIME/1000)))
                 - CURR_TIME_UTC=$(date -u)
                 - |
@@ -310,7 +324,7 @@ Resources:
                           echo "  Summary of the process:"
                           echo "  ----------------------------------------------------------------"
                           echo "  DryRunMode                   : $AWS_NukeDryRun"
-                          echo "  Account ID                   : $(aws sts get-caller-identity | jq -r .Account)"
+                          echo "  Account ID                   : $account_id"
                           echo "  Target Region                : $NukeTargetRegion"
                           echo "  Build State                  : $([ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ] && echo "JOB SUCCEEDED" || echo "JOB FAILED")"
                           echo "  Build ID                     : ${CODEBUILD_BUILD_ID}"
@@ -319,16 +333,17 @@ Resources:
                           echo "  Process End Time             : ${CURR_TIME_UTC}"
                           echo "  Log Stream Path              : $NukeCodeBuildProjectName/${CODEBUILD_LOG_PATH}"
                           echo "  ----------------------------------------------------------------"
-                          echo "  ################# Removed the following resources #################"
+                          echo "  ################# Failed Nuke Process - Exiting ###################"
                           echo    ""
                   } >> fail_email_template.txt
                 - | 
                   if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ]; then 
-                    echo "Couldn't process Nuke Cleanser Exiting";
+                    echo " Couldn't process Nuke Cleanser - Exiting " >> fail_email_template.txt
+                    cat error_log.txt >> fail_email_template.txt
                     aws sns publish --topic-arn $Publish_TopicArn --message file://fail_email_template.txt --subject "Nuke Account Cleanser Failed"
                     exit 1;
                   fi
-                - sleep 10
+                - sleep 120
                 - echo "Getting CW Logs event start and stop time"
                 - aws logs describe-log-streams --log-group-name $NukeCodeBuildProjectName --order-by LastEventTime --descending --max-items 1 > $account_id_logstreams.json;
                 - LOG_EVENT_END_TIME=$(cat $account_id_logstreams.json |jq -r .logStreams[].lastIngestionTime);
@@ -344,6 +359,10 @@ Resources:
                     exit 0;
                   else
                     aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --start-time $LOG_EVENT_START_TIME --end-time $LOG_EVENT_END_TIME --log-stream-names $LOG_STREAM_NAME --filter-pattern "removed" --no-interleaved | jq -r .events[].message > log_output.txt;
+                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --log-stream-names $LOG_STREAM_NAME --filter-pattern '[w1 != global, w2]' --no-interleaved | jq -r .events[].message > region_failures.txt;
+                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --start-time $LOG_EVENT_START_TIME --end-time $LOG_EVENT_END_TIME --log-stream-names $LOG_STREAM_NAME --filter-pattern '[w1 != global, w2]' --no-interleaved | jq -r .events[].message > region_failures.txt;
+                    awk '/There are resources in failed state/,/Error: failed/' region_failures.txt > failure_email_output.txt
+                    awk '/Error: failed/,/\n/' failure_email_output.txt > failed_log_output.txt
                   fi
                 - |
                   if [ -r log_output.txt ]; then
@@ -365,7 +384,7 @@ Resources:
                           echo "  Summary of the process:"
                           echo "  ------------------------------------------------------------------"
                           echo "  DryRunMode                   : $AWS_NukeDryRun"
-                          echo "  Account ID                   : $(aws sts get-caller-identity | jq -r .Account)"
+                          echo "  Account ID                   : $account_id"
                           echo "  Target Region                : $NukeTargetRegion"
                           echo "  Build State                  : $([ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ] && echo "JOB SUCCEEDED" || echo "JOB FAILED")"
                           echo "  Build ID                     : ${CODEBUILD_BUILD_ID}"
@@ -374,15 +393,23 @@ Resources:
                           echo "  Process End Time             : ${BLD_END_TIME}"
                           echo "  Log Stream Path              : $NukeCodeBuildProjectName/${CODEBUILD_LOG_PATH}"
                           echo "  ------------------------------------------------------------------"
-                          echo "  ################ Removed the following resources #################"
+                          echo "  ################### Nuke Cleanser Logs ####################"
                           echo    ""
                   } >> email_template.txt
 
+                - echo " FAILED RESOURCES " >> email_template.txt
+                - echo " ------------------------------- " >> email_template.txt
+                - cat failed_log_output.txt >> email_template.txt
+                - echo "Total number of Resources that would be removed:" >> email_template.txt
+                - cat aws-nuke.log | grep -c " - would remove" >> email_template.txt
+                - cat aws-nuke.log | grep -F " - would remove" >> email_template.txt
+                - echo " SUCCESSFULLY NUKED RESOURCES " >> email_template.txt
+                - echo " ------------------------------- " >> email_template.txt
                 - cat log_output.txt >> email_template.txt
                 - aws sns publish --topic-arn $Publish_TopicArn --message file://email_template.txt --subject "$sub"
                 - echo "Resources Nukeable:"
-                - cat aws-nuke.log | grep -F "Scan complete:"
-                - echo "Total number of Resources Removed:"
+                - cat aws-nuke.log | grep -F "Scan complete:" || echo "Nothing Nukeable yet"
+                - echo "Total number of Resources Deleted:"
                 - cat aws-nuke.log | grep -c " - removed" || echo "Nothing removed yet"
                 - echo "List of Resources Deleted today:"
                 - cat aws-nuke.log | grep -F " - removed" || echo "Nothing deleted yet"
@@ -408,21 +435,33 @@ Resources:
               "InputPayLoad": {
                 "nuke_dry_run": "${AWSNukeDryRunFlag}",
                 "nuke_version": "${AWSNukeVersion}",
-                "nuke_config_bucket": "${BucketName}",
-                "sns_notification_arn": "${NukeTopicArn}",
                 "region_list": [
                   "us-west-1",
                   "us-east-1"
                 ]
               }
             }
-        
-  
+
   # S3 Bucket for storing nuke config yaml
   NukeS3Bucket:
     Type: AWS::S3::Bucket
+    DeletionPolicy: Retain # should empty the S3 bucket contents if you want to delete the S3 when the stack is deleted
+    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Ref BucketName
+      BucketName: !Join
+        - '-'
+        - - !Ref BucketName
+          - !Ref AWS::AccountId
+          - !Ref AWS::Region
+          - !Select
+            - 0
+            - !Split
+              - '-'
+              - !Select
+                - 2
+                - !Split
+                  - /
+                  - !Ref AWS::StackId
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         IgnorePublicAcls: true
@@ -430,7 +469,7 @@ Resources:
         RestrictPublicBuckets: true
       Tags:
         - Key: DoNotNuke
-          Value: 'true'
+          Value: True
         - Key: owner
           Value: !Ref Owner
 
@@ -452,7 +491,23 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
-              
+
+  NukeEmailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: NukeTopic
+      FifoTopic: false
+      KmsMasterKeyId: "alias/aws/sns"
+      Subscription:
+       - Endpoint: "awsree@amazon.com" # Provide your valid email address for receiving notifications
+         Protocol: "email"
+      TopicName: !Ref NukeTopicName
+      Tags:
+        - Key: DoNotNuke
+          Value: True
+        - Key: owner
+          Value: !Ref Owner
+
   ## Role for sample step function
   NukeStepFunctionRole:
     Type: AWS::IAM::Role
@@ -499,7 +554,7 @@ Resources:
                 Action:
                   - sns:Publish
                 Resource:
-                  - !Ref NukeTopicArn
+                  - !Ref NukeEmailTopic
               - Effect: "Allow"
                 Action:
                   - states:DescribeStateMachine
@@ -510,8 +565,6 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:nuke-account-cleanser-codebuild-state-machine"
 
-
-  ## Sample State Machine for exercise the CodeBuild Proxy Lambda
   NukeStepFunction:
     Type: 'AWS::StepFunctions::StateMachine'
     Properties:
@@ -529,9 +582,7 @@ Resources:
                 "Parameters": {
                   "region_id.$": "$$.Map.Item.Value",
                   "nuke_dry_run.$": "$.InputPayLoad.nuke_dry_run",
-                  "nuke_version.$": "$.InputPayLoad.nuke_version",
-                  "nuke_config_bucket.$": "$.InputPayLoad.nuke_config_bucket",
-                  "sns_notification_arn.$": "$.InputPayLoad.sns_notification_arn"
+                  "nuke_version.$": "$.InputPayLoad.nuke_version"
                 },
                 "Next": "Clean Output and Notify",
                 "MaxConcurrency": 0,
@@ -558,16 +609,6 @@ Resources:
                             "Name": "AWS_NukeVersion",
                             "Type": "PLAINTEXT",
                             "Value.$": "$.nuke_version"
-                          },
-                          {
-                            "Name": "NukeS3Bucket",
-                            "Type": "PLAINTEXT",
-                            "Value.$": "$.nuke_config_bucket"
-                          },
-                          {
-                            "Name": "Publish_TopicArn",
-                            "Type": "PLAINTEXT",
-                            "Value.$": "$.sns_notification_arn"
                           }
                         ]
                       },
@@ -589,9 +630,10 @@ Resources:
                       "Catch": [
                         {
                           "ErrorEquals": [
-                            "States.TaskFailed"
+                            "States.ALL"
                           ],
-                          "Next": "Nuke Failed"
+                          "Next": "Notify Failure and Exit",
+                          "ResultPath": "$.AccountCleanserRegionOutput",
                         }
                       ]
                     },
@@ -606,13 +648,23 @@ Resources:
                         {
                           "Variable": "$.AccountCleanserRegionOutput.NukeBuildOutput.BuildStatus",
                           "StringEquals": "FAILED",
-                          "Next": "Nuke Failed"
+                          "Next": "Notify Failure and Exit"
                         }
                       ],
-                      "Default": "Nuke Failed"
+                      "Default": "Nuke Success"
                     },
                     "Nuke Success": {
                       "Type": "Succeed"
+                    },
+                    "Notify Failure and Exit": {
+                      "Type": "Task",
+                      "Resource": "arn:aws:states:::sns:publish",
+                      "Parameters": {
+                        "Subject.$": "States.Format('Nuke Account Cleanser failed with error {} in CodeBuild Task!', $.AccountCleanserRegionOutput.Error)",
+                        "Message.$": "States.Format('Nuke Account Cleanser failed with error {}. Check CodeBuild execution to investigate', $.AccountCleanserRegionOutput.Error)",
+                        "TopicArn": "${NukeEmailTopic}"
+                      },
+                      "Next": "Nuke Failed"
                     },
                     "Nuke Failed": {
                       "Type": "Fail"
@@ -627,9 +679,23 @@ Resources:
                 "Parameters": {
                   "Subject": "State Machine for Nuke Account Cleanser succeeded",
                   "Message.$": "$.InputPayLoad",
-                  "TopicArn": "${NukeTopicArn}"
+                  "TopicArn": "${NukeEmailTopic}"
                 },
                 "End": true
               }
             }
           }
+      Tags:
+        - Key: DoNotNuke
+          Value: True
+        - Key: owner
+          Value: !Ref Owner
+
+
+Outputs:
+  NukeTopicArn:
+    Description: Arn of SNS Topic used for notifying nuke results in email
+    Value: !Ref NukeEmailTopic
+  NukeS3BucketValue:
+    Description: S3 bucket created with the random generated name
+    Value: !Ref NukeS3Bucket

@@ -7,7 +7,7 @@ import yaml
 import argparse
 import copy
 
-GLOBAL_EXCEPTIONS = [
+GLOBAL_RESOURCE_EXCEPTIONS = [
     {"property": "tag:DoNotNuke", "value": "True"},
     {"property": "tag:Permanent", "value": "True"},
     {"type": "regex", "value": ".*auto-account-cleanser*.*"},
@@ -27,10 +27,10 @@ class StackInfo:
         self.account = account
 
     def Populate(self):
-        self.BuildResourceList()
-        self.MergeWithDefaultConfig()
+        self.UpdateCFNStackList()
+        self.OverrideDefaultConfig()
 
-    def BuildResourceList(self):
+    def UpdateCFNStackList(self):
         try:
             for region in self.regions:
                 cfn_client = self.session.client("cloudformation", region_name=region)
@@ -46,12 +46,12 @@ class StackInfo:
                 )
                 for page in responses:
                     for stack in page.get("StackSummaries"):
-                        self.GetStackResources(stack, cfn_client)
+                        self.GetCFNResources(stack, cfn_client)
                 self.BuildIamExclusionList(region)
         except Exception as e:
-            print("Exception calling BuildResourceList:\n {}".format(e))
+            print("Error in calling UpdateCFNStackList:\n {}".format(e))
 
-    def GetStackResources(self, stack, cfn_client):
+    def GetCFNResources(self, stack, cfn_client):
         try:
             stack_name = stack.get("StackName")
 
@@ -76,10 +76,9 @@ class StackInfo:
                     )
                     for resource in stack_resources.get("StackResourceSummaries"):
                         if resource.get("ResourceType") == "AWS::CloudFormation::Stack":
-                            # recurse if the resource type is a stack (nested stacks)
-                            self.GetStackResources(resource, cfn_client)
+                            self.GetCFNResources(resource, cfn_client)
                         else:
-                            nuke_type = self.FixResourceName(resource["ResourceType"])
+                            nuke_type = self.UpdateResourceName(resource["ResourceType"])
                             if nuke_type in self.resources:
                                 self.resources[nuke_type].append(
                                     {
@@ -95,9 +94,9 @@ class StackInfo:
                                     }
                                 ]
         except Exception as e:
-            print("Exception calling GetStackResources:\n {}".format(e))
+            print("Error calling GetCFNResources:\n {}".format(e))
 
-    def FixResourceName(self, resource):
+    def UpdateResourceName(self, resource):
         nuke_type = str.replace(resource, "AWS::", "")
         nuke_type = str.replace(nuke_type, "::", "")
         nuke_type = str.replace(nuke_type, "Config", "ConfigService", 1)
@@ -126,7 +125,7 @@ class StackInfo:
                                             role.get("RoleName")
                                         ]
 
-    def MergeWithDefaultConfig(self):
+    def OverrideDefaultConfig(self):
         # Open the nuke_generic_config.yaml and merge the captured resources/exclusions with it
         try:
             with open(r"nuke_generic_config.yaml") as config_file:
@@ -148,7 +147,7 @@ class StackInfo:
                     self.config["accounts"].pop("ACCOUNT", None)
             # Global exclusions apply to every type of resource
             for resource in self.config["accounts"][self.account]["filters"]:
-                for exception in GLOBAL_EXCEPTIONS:
+                for exception in GLOBAL_RESOURCE_EXCEPTIONS:
                     self.config["accounts"][self.account]["filters"][resource].append(
                         exception.copy()
                     )
@@ -184,7 +183,7 @@ except Exception as e:
     exit(1)
 
 if __name__ == "__main__":
-
+    print("Incoming Args: ", args)
     stackInfo = StackInfo(args.account, [args.region])
     stackInfo.Populate()
     stackInfo.WriteConfig()
