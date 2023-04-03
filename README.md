@@ -70,15 +70,15 @@ $ aws-nuke -c $line.yaml --force --no-dry-run --access-key-id $ACCESS_KEY_ID --s
 
 * Clone the repo
 * Determine the ID of the account to be deployed for clean up ( This is only to be deployed to Dev/Test/Sandbox environments )
-* Verify and Update your nuke config file as needed with specific filters for the resources/accounts
-* Deploy the stack using the below command. You can run it in any desired region. Replace the required parameter with the SNS Topic Arn for  notification email
+* Verify and Update your nuke configuration file as needed with specific filters for the resources/accounts
+* Deploy the stack using the below command. You can run it in any desired region.
 ```sh
-aws cloudformation create-stack --stack-name NukeCleanser --template-body file://nuke-cfn-stack.yaml --region us-east-2 --capabilities CAPABILITY_NAMED_IAM --parameters ParameterKey=NukeTopicArn,ParameterValue='arn:aws:sns:us-east-2:{ACCT_ID}:TestSNSTopic'
+aws cloudformation create-stack --stack-name NukeCleanser --template-body file://nuke-cfn-stack.yaml --region us-east-2 --capabilities CAPABILITY_NAMED_IAM
 ```
-* Once the S3 bucket is created using the cfn template, upload the Nuke generic config file and the config update python script
+* Once the stack is created, upload the nuke generic config file and the python script to the S3 bucket using the commands below. You can find the name of the S3 bucket generated from the CloudFormation console `Outputs` tab.
 ```sh
-aws s3 cp config/nuke_generic_config.yaml --region us-east-2 s3://nuke-account-cleanser-config
-aws s3 cp config/nuke_config_update.py --region us-east-2 s3://nuke-account-cleanser-config
+aws s3 cp config/nuke_generic_config.yaml --region us-east-2 s3://{your-bucket-name}
+aws s3 cp config/nuke_config_update.py --region us-east-2 s3://{your-bucket-name}
 ```
 * Run the stack manually by triggering the StepFunctions with the below sample input payload. (which is pre-configured in the EventBridge Target as a Constant JSON input). You can configure this to run in parallel on the required number of regions by updating the region_list parameter.
 
@@ -86,10 +86,9 @@ aws s3 cp config/nuke_config_update.py --region us-east-2 s3://nuke-account-clea
 {
   "InputPayLoad": {
     "nuke_dry_run": "true",
-    "nuke_version": "2.5",
-    "nuke_config_bucket": "nuke-account-cleanser-config",
-    "sns_notification_arn": "sns_topic_arn",
+    "nuke_version": "2.21.2",
     "region_list": [
+      "global",
       "us-west-1",
       "us-east-1"
     ]
@@ -117,11 +116,19 @@ Account Cleansing Process Completed;
   Build State                  : JOB SUCCEEDED
   Build ID                     : AccountNuker-NukeCleanser:4509a9b5
   CodeBuild Project Name       : AccountNuker-NukeCleanser
-  Process Start Time           : Thu Dec  2 02:04:40 UTC 2021
-  Process End Time             : Thu Dec  2 02:06:45 UTC 2021
+  Process Start Time           : Thu Feb 23 04:05:21 UTC 2023
+  Process End Time             : Thu Feb 23 04:05:54 UTC 2023
   Log Stream Path              : AccountNuker-NukeCleanser/logPath
   ------------------------------------------------------------------
-  ################ Removed the following resources #################
+  ################ Nuke Cleanser Logs #################
+
+  FAILED RESOURCES
+-------------------------------
+Total number of Resources that would be removed:
+3
+us-west-1 - SQSQueue - https://sqs.us-east-1.amazonaws.com/123456789012/test-nuke-queue - would remove
+us-west-1 - SNSTopic - TopicARN: arn:aws:sns:us-east-1:123456789012:test-nuke-topic - [TopicARN: "arn:aws:sns:us-east-1:123456789012:test-topic"] - would remove
+us-west-1 - S3Bucket - s3://test-nuke-bucket-us-west-1 - [CreationDate: "2023-01-25 11:13:14 +0000 UTC", Name: "test-nuke-bucket-us-west-1"] - would remove
 
 ```
 * By default the stack runs aws-nuke in DryRun mode, To actually delete resources update the stack with AWSNukeDryRunFlag parameter flipped to false OR udpate manually in the CodeBuild environment variables section.
