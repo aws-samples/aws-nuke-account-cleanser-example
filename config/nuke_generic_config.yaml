@@ -42,7 +42,7 @@ accounts:
       CloudTrailTrail: # filter all CloudTrail
       - type: regex
         value: ".*"
-      SNSTopic: [] # SNS is protected based on global exception tags inside the nuke_config_update.py
+      SNSTopic: # SNS is protected based on global exception tags inside the nuke_config_update.py
       - type: regex
         value: ".*"
       SQSQueue: [] # delete all SQS
