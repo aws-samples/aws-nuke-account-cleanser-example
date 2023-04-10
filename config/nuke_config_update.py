@@ -11,6 +11,7 @@ GLOBAL_RESOURCE_EXCEPTIONS = [
     {"property": "tag:DoNotNuke", "value": "True"},
     {"property": "tag:Permanent", "value": "True"},
     {"type": "regex", "value": ".*auto-account-cleanser*.*"},
+    {"type": "regex", "value": ".*nuke-account-cleanser*.*"},
     {"type": "regex", "value": ".*securityhub*.*"},
     {"type": "regex", "value": ".*aws-prod*.*"},
 ]

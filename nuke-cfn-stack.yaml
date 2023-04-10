@@ -272,9 +272,12 @@ Resources:
                 - export AWS_PROFILE=nuke
                 - export AWS_DEFAULT_PROFILE=nuke
                 - export AWS_SDK_LOAD_CONFIG=1
+                - echo "Getting 12-digit ID of this account"
+                - account_id=$(aws sts get-caller-identity |jq -r ".Account");
             build:
               on-failure: CONTINUE
               commands:
+                - echo " ------------------------------------------------ " >> error_log.txt
                 - echo "Getting nuke generic config file from S3";
                 - aws s3 cp s3://$NukeS3Bucket/nuke_generic_config.yaml .
                 - echo "Updating the TARGET_REGION in the generic config from the parameter"
@@ -286,7 +289,6 @@ Resources:
                 - echo "Running Config filter/update script";
                 - python3 nuke_config_update.py --account $account_id --region "$NukeTargetRegion";
                 - echo "Configured nuke_config.yaml";
-                - echo " ------------------------------------------------ " >> error_log.txt
                 - echo "Running Nuke on Account";
                 - |
                   if [ "$AWS_NukeDryRun" = "true" ]; then
@@ -340,7 +342,7 @@ Resources:
                   if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ]; then 
                     echo " Couldn't process Nuke Cleanser - Exiting " >> fail_email_template.txt
                     cat error_log.txt >> fail_email_template.txt
-                    aws sns publish --topic-arn $Publish_TopicArn --message file://fail_email_template.txt --subject "Nuke Account Cleanser Failed"
+                    aws sns publish --topic-arn $Publish_TopicArn --message file://fail_email_template.txt --subject "Nuke Account Cleanser Failed in account $account_id and region $NukeTargetRegion"
                     exit 1;
                   fi
                 - sleep 120
@@ -358,10 +360,8 @@ Resources:
                     echo "Couldn't filter log events as params are null or empty";
                     exit 0;
                   else
-                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --start-time $LOG_EVENT_START_TIME --end-time $LOG_EVENT_END_TIME --log-stream-names $LOG_STREAM_NAME --filter-pattern "removed" --no-interleaved | jq -r .events[].message > log_output.txt;
-                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --log-stream-names $LOG_STREAM_NAME --filter-pattern '[w1 != global, w2]' --no-interleaved | jq -r .events[].message > region_failures.txt;
-                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --start-time $LOG_EVENT_START_TIME --end-time $LOG_EVENT_END_TIME --log-stream-names $LOG_STREAM_NAME --filter-pattern '[w1 != global, w2]' --no-interleaved | jq -r .events[].message > region_failures.txt;
-                    awk '/There are resources in failed state/,/Error: failed/' region_failures.txt > failure_email_output.txt
+                    aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --log-stream-names $LOG_STREAM_NAME --filter-pattern "removed" --no-interleaved | jq -r .events[].message > log_output.txt;
+                    awk '/There are resources in failed state/,/Error: failed/' aws-nuke.log > failure_email_output.txt
                     awk '/Error: failed/,/\n/' failure_email_output.txt > failed_log_output.txt
                   fi
                 - |
@@ -374,7 +374,7 @@ Resources:
                     echo "The file log_output.txt does not exist."
                   fi
                 - echo "Publishing Log Ouput to SNS:"
-                - sub="Nuke Account Cleanser Succeeded"
+                - sub="Nuke Account Cleanser Succeeded in account "$account_id" and region "$NukeTargetRegion""
                 - |
                   {
                           echo "  Account Cleansing Process Completed;"
@@ -397,20 +397,31 @@ Resources:
                           echo    ""
                   } >> email_template.txt
 
-                - echo " FAILED RESOURCES " >> email_template.txt
-                - echo " ------------------------------- " >> email_template.txt
-                - cat failed_log_output.txt >> email_template.txt
-                - echo "Total number of Resources that would be removed:" >> email_template.txt
-                - cat aws-nuke.log | grep -c " - would remove" >> email_template.txt
-                - cat aws-nuke.log | grep -F " - would remove" >> email_template.txt
-                - echo " SUCCESSFULLY NUKED RESOURCES " >> email_template.txt
-                - echo " ------------------------------- " >> email_template.txt
-                - cat log_output.txt >> email_template.txt
+                - cat aws-nuke.log | grep -F "Scan complete:" || echo "No Resources scanned and nukeable yet"
+                - echo "Number of Resources that is filtered by config:" >> email_template.txt
+                - cat aws-nuke.log | grep -c " - filtered by config" >> email_template.txt
+                - echo " ------------------------------------------ " >> email_template.txt
+                - |
+                  if [ "$AWS_NukeDryRun" = "true" ]; then
+                    echo "RESOURCES THAT WOULD BE REMOVED:" >> email_template.txt
+                    echo " ----------------------------------------- " >> email_template.txt
+                    cat aws-nuke.log | grep -c " - would remove" >> email_template.txt
+                    cat aws-nuke.log | grep -F " - would remove" >> email_template.txt || echo "No resources to be removed" >> email_template.txt
+                  else
+                    echo " FAILED RESOURCES " >> email_template.txt
+                    echo " ------------------------------- " >> email_template.txt
+                    cat failed_log_output.txt >> email_template.txt
+                    echo " SUCCESSFULLY NUKED RESOURCES " >> email_template.txt
+                    echo " ------------------------------- " >> email_template.txt
+                    cat log_output.txt >> email_template.txt
+                  fi
                 - aws sns publish --topic-arn $Publish_TopicArn --message file://email_template.txt --subject "$sub"
                 - echo "Resources Nukeable:"
                 - cat aws-nuke.log | grep -F "Scan complete:" || echo "Nothing Nukeable yet"
+                - echo "Total number of Resources that would be removed:"
+                - cat aws-nuke.log | grep -c " - would remove" || echo "Nothing would be removed yet"
                 - echo "Total number of Resources Deleted:"
-                - cat aws-nuke.log | grep -c " - removed" || echo "Nothing removed yet"
+                - cat aws-nuke.log | grep -c " - removed" || echo "Nothing deleted yet"
                 - echo "List of Resources Deleted today:"
                 - cat aws-nuke.log | grep -F " - removed" || echo "Nothing deleted yet"
 
@@ -469,7 +480,7 @@ Resources:
         RestrictPublicBuckets: true
       Tags:
         - Key: DoNotNuke
-          Value: True
+          Value: 'True'
         - Key: owner
           Value: !Ref Owner
 
@@ -504,7 +515,7 @@ Resources:
       TopicName: !Ref NukeTopicName
       Tags:
         - Key: DoNotNuke
-          Value: True
+          Value: 'True'
         - Key: owner
           Value: !Ref Owner
 
@@ -632,8 +643,8 @@ Resources:
                           "ErrorEquals": [
                             "States.ALL"
                           ],
-                          "Next": "Notify Failure and Exit",
-                          "ResultPath": "$.AccountCleanserRegionOutput",
+                          "Next": "Nuke Failed",
+                          "ResultPath": "$.AccountCleanserRegionOutput"
                         }
                       ]
                     },
@@ -648,37 +659,44 @@ Resources:
                         {
                           "Variable": "$.AccountCleanserRegionOutput.NukeBuildOutput.BuildStatus",
                           "StringEquals": "FAILED",
-                          "Next": "Notify Failure and Exit"
+                          "Next": "Nuke Failed"
                         }
                       ],
                       "Default": "Nuke Success"
                     },
                     "Nuke Success": {
-                      "Type": "Succeed"
-                    },
-                    "Notify Failure and Exit": {
-                      "Type": "Task",
-                      "Resource": "arn:aws:states:::sns:publish",
+                      "Type": "Pass",
                       "Parameters": {
-                        "Subject.$": "States.Format('Nuke Account Cleanser failed with error {} in CodeBuild Task!', $.AccountCleanserRegionOutput.Error)",
-                        "Message.$": "States.Format('Nuke Account Cleanser failed with error {}. Check CodeBuild execution to investigate', $.AccountCleanserRegionOutput.Error)",
-                        "TopicArn": "${NukeEmailTopic}"
+                        "Status": "Succeeded",
+                        "Region.$": "$.region_id",
+                        "CodeBuild Status.$": "$.AccountCleanserRegionOutput.NukeBuildOutput.BuildStatus"
                       },
-                      "Next": "Nuke Failed"
+                      "ResultPath": "$.result",
+                      "End": true
                     },
                     "Nuke Failed": {
-                      "Type": "Fail"
+                      "Type": "Pass",
+                      "Parameters": {
+                        "Status": "Failed",
+                        "Region.$": "$.region_id",
+                        "CodeBuild Status.$": "States.Format('Nuke Account Cleanser failed with error {}. Check CodeBuild execution for input region {} to investigate', $.AccountCleanserRegionOutput.Error, $.region_id)"
+                      },
+                      "ResultPath": "$.result",
+                      "End": true
                     }
                   }
                 },
-                "ResultPath": null
+                "ResultSelector": {
+                  "filteredResult.$": "$..result"
+                },
+                "ResultPath": "$.NukeFinalMapAllRegionsOutput"
               },
               "Clean Output and Notify": {
                 "Type": "Task",
                 "Resource": "arn:aws:states:::sns:publish",
                 "Parameters": {
-                  "Subject": "State Machine for Nuke Account Cleanser succeeded",
-                  "Message.$": "$.InputPayLoad",
+                  "Subject": "State Machine for Nuke Account Cleanser completed",
+                  "Message.$": "States.Format('Nuke Account Cleanser completed for input payload: \n {}. \n ----------------------------------------- \n Check the summmary of execution below: \n {}', $.InputPayLoad, $.NukeFinalMapAllRegionsOutput.filteredResult)",
                   "TopicArn": "${NukeEmailTopic}"
                 },
                 "End": true
@@ -687,7 +705,7 @@ Resources:
           }
       Tags:
         - Key: DoNotNuke
-          Value: True
+          Value: 'True'
         - Key: owner
           Value: !Ref Owner
 
