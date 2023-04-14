@@ -510,7 +510,7 @@ Resources:
       FifoTopic: false
       KmsMasterKeyId: "alias/aws/sns"
       Subscription:
-       - Endpoint: "awsree@amazon.com" # Provide your valid email address for receiving notifications
+       - Endpoint: "test@test.com" # Provide your valid email address for receiving notifications
          Protocol: "email"
       TopicName: !Ref NukeTopicName
       Tags:
