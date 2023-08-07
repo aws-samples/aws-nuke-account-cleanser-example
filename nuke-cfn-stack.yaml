@@ -97,12 +97,14 @@ Resources:
       Description: Nuke Auto account cleanser role for Dev/Sandbox accounts
       MaxSessionDuration: 7200
       Tags: 
-      - Key: privileged
-        Value: 'true' 
-      - Key: description
-        Value: 'PrivilegedReadWrite:auto-account-cleanser-role'
-      - Key: owner
-        Value: !Ref Owner
+        - Key: privileged
+          Value: 'true'
+        - Key: DoNotNuke
+          Value: 'True'
+        - Key: description
+          Value: 'PrivilegedReadWrite:auto-account-cleanser-role'
+        - Key: owner
+          Value: !Ref Owner
       AssumeRolePolicyDocument:
         Statement:
           - Action: sts:AssumeRole
@@ -127,6 +129,11 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sts:AssumeRole
+      Tags:
+        - Key: DoNotNuke
+          Value: 'True'
+        - Key: owner
+          Value: !Ref Owner
       Policies:
         -
          PolicyName: EventBridgeNukeStateMachineExecutionPolicy
@@ -149,6 +156,11 @@ Resources:
             Principal:
               Service: codebuild.amazonaws.com
             Action: sts:AssumeRole
+      Tags:
+        - Key: DoNotNuke
+          Value: 'True'
+        - Key: owner
+          Value: !Ref Owner
       Policies:
         -
           PolicyName: NukeCodeBuildLogsPolicy
@@ -219,6 +231,11 @@ Resources:
         Type: NO_ARTIFACTS
       BadgeEnabled: false
       Description: Builds a container to run AWS-Nuke for all accounts within the specified account/regions
+      Tags:
+        - Key: DoNotNuke
+          Value: 'True'
+        - Key: owner
+          Value: !Ref Owner
       Environment:
         ComputeType: BUILD_GENERAL1_2XLARGE
         Image: aws/codebuild/docker:18.09.0
@@ -346,18 +363,11 @@ Resources:
                     exit 1;
                   fi
                 - sleep 120
-                - echo "Getting CW Logs event start and stop time"
-                - aws logs describe-log-streams --log-group-name $NukeCodeBuildProjectName --order-by LastEventTime --descending --max-items 1 > $account_id_logstreams.json;
-                - LOG_EVENT_END_TIME=$(cat $account_id_logstreams.json |jq -r .logStreams[].lastIngestionTime);
-                - LOG_EVENT_START_TIME=$(cat $account_id_logstreams.json |jq -r .logStreams[].firstEventTimestamp);
-                - LOG_STREAM_NAME=$(cat $account_id_logstreams.json |jq -r .logStreams[].logStreamName);
-                - echo $LOG_EVENT_END_TIME
-                - echo $LOG_EVENT_START_TIME
-                - echo $LOG_STREAM_NAME
-                - BLD_END_TIME=$(date -d @$(($LOG_EVENT_END_TIME/1000)))
+                - LOG_STREAM_NAME=$CODEBUILD_LOG_PATH;
+                - CURR_TIME_UTC=$(date -u)
                 - | 
                   if [ -z "${LOG_STREAM_NAME}" ]; then
-                    echo "Couldn't filter log events as params are null or empty";
+                    echo "Couldn't find the log stream for log events";
                     exit 0;
                   else
                     aws logs filter-log-events --log-group-name $NukeCodeBuildProjectName --log-stream-names $LOG_STREAM_NAME --filter-pattern "removed" --no-interleaved | jq -r .events[].message > log_output.txt;
@@ -390,7 +400,7 @@ Resources:
                           echo "  Build ID                     : ${CODEBUILD_BUILD_ID}"
                           echo "  CodeBuild Project Name       : $NukeCodeBuildProjectName"
                           echo "  Process Start Time           : ${BLD_START_TIME}"
-                          echo "  Process End Time             : ${BLD_END_TIME}"
+                          echo "  Process End Time             : ${CURR_TIME_UTC}"
                           echo "  Log Stream Path              : $NukeCodeBuildProjectName/${CODEBUILD_LOG_PATH}"
                           echo "  ------------------------------------------------------------------"
                           echo "  ################### Nuke Cleanser Logs ####################"
@@ -399,13 +409,13 @@ Resources:
 
                 - cat aws-nuke.log | grep -F "Scan complete:" || echo "No Resources scanned and nukeable yet"
                 - echo "Number of Resources that is filtered by config:" >> email_template.txt
-                - cat aws-nuke.log | grep -c " - filtered by config" >> email_template.txt
+                - cat aws-nuke.log | grep -c " - filtered by config" || echo 0 >> email_template.txt
                 - echo " ------------------------------------------ " >> email_template.txt
                 - |
                   if [ "$AWS_NukeDryRun" = "true" ]; then
                     echo "RESOURCES THAT WOULD BE REMOVED:" >> email_template.txt
                     echo " ----------------------------------------- " >> email_template.txt
-                    cat aws-nuke.log | grep -c " - would remove" >> email_template.txt
+                    cat aws-nuke.log | grep -c " - would remove" || echo 0 >> email_template.txt
                     cat aws-nuke.log | grep -F " - would remove" >> email_template.txt || echo "No resources to be removed" >> email_template.txt
                   else
                     echo " FAILED RESOURCES " >> email_template.txt
@@ -435,6 +445,13 @@ Resources:
       ScheduleExpression: cron(0 7 ? * * *)
       State:  ENABLED
       RoleArn: !GetAtt EventBridgeNukeScheduleRole.Arn
+      # Update the tags for this manually as the property is not available for all targets
+      # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-events-rule-tag.html
+      # Tag:
+      #- Key: DoNotNuke
+      #  Value: 'True'
+      #- Key: owner
+      #  Value: !Ref Owner
       Targets:
       -
         Arn: !Ref NukeStepFunction
@@ -533,6 +550,11 @@ Resources:
                 - !Sub "states.${AWS::Region}.amazonaws.com"
             Action:
               - "sts:AssumeRole"
+      Tags:
+        - Key: DoNotNuke
+          Value: 'True'
+        - Key: owner
+          Value: !Ref Owner
       Path: "/"
       Policies:
         - PolicyName: nuke-account-cleanser-codebuild-state-machine-policy
