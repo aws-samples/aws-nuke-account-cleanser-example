@@ -237,7 +237,7 @@ Resources:
         - Key: owner
           Value: !Ref Owner
       Environment:
-        ComputeType: BUILD_GENERAL1_2XLARGE
+        ComputeType: BUILD_GENERAL1_SMALL
         Image: aws/codebuild/docker:18.09.0
         ImagePullCredentialsType: CODEBUILD
         PrivilegedMode: true
