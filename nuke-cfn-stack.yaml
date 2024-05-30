@@ -309,9 +309,9 @@ Resources:
                 - echo "Running Nuke on Account";
                 - |
                   if [ "$AWS_NukeDryRun" = "true" ]; then
-                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --profile nuke 2>&1 |tee -a aws-nuke.log; done
+                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --max-wait-retries 10 --profile nuke 2>&1 |tee -a aws-nuke.log; done
                   elif [ "$AWS_NukeDryRun" = "false" ]; then
-                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --no-dry-run --profile nuke 2>&1 |tee -a aws-nuke.log; done
+                    for file in $(ls nuke_config_$NukeTargetRegion*) ; do aws-nuke -c $file --force --max-wait-retries 10 --no-dry-run --profile nuke 2>&1 |tee -a aws-nuke.log; done
                   else
                     echo "Couldn't determine Dryrun flag...exiting"
                     exit 1
