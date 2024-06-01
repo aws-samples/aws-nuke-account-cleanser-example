@@ -7,7 +7,10 @@
 ### In short, it will take your account back to Day1 with few exceptions
 
 ```sh
-$ Warning: This is a very destructive tool and should not be deployed without fully understanding the impact it will have on the AWS accounts you allow it to interface with. The aws-nuke binary if not configured correctly, can delete unintended resources in your AWS accounts. Please use caution and configure this tool to delete unused resources only in your lower test/sandbox environment accounts.
+$ WARNING: \
+This is a very destructive tool and should not be deployed without fully understanding the impact it will have on the AWS accounts you allow it to interface with. \
+The aws-nuke binary if not configured correctly, can delete unintended resources in your AWS accounts. \
+Please use caution and configure this tool to delete unused resources only in your lower test/sandbox environment accounts.
 ```
 
 ## Overview
