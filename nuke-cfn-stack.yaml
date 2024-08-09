@@ -1,7 +1,7 @@
 ---
 AWSTemplateFormatVersion: 2010-09-09
 Description: >
-  This CFN Template creates a StepFunction state machine definition , to invoke a CodeBuild Project and 
+  This CFN Template creates a StepFunction state machine definition , to invoke a CodeBuild Project and
   associated resources for setting up a single-account script that cleanses the resources across supplied regions
   via AWS-Nuke. It also creates the role for the nuke cleanser which is used for configuring the credentials
   for aws-nuke binary to cleanse resources within that account/region.
@@ -37,8 +37,77 @@ Parameters:
     Type: String
     Default: OpsAdmin
     Description: The Owner of the account to be used for tagging purpose
-
+  BudgetAmount:
+    Description: The budget amount in USD.
+    Type: Number
+    Default: 10
+  BudgetThreshold:
+    Description: The threshold percentage at which to trigger the nuke (e.g., 100 for budget overage).
+    Type: Number
+    Default: 100
 Resources:
+  NukeBudgetSNS:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Endpoint: !Ref BudgetEmail
+          Protocol: email
+      DisplayName: Nuke Budget Notification Topic
+
+  NukeBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetLimit:
+          Amount: !Ref BudgetAmount
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters:
+          LinkedAccount: !Ref AWS::AccountId
+        CostTypes:
+          IncludeCredit: false
+          IncludeOtherSubscription: true
+          IncludeRecurring: true
+          IncludeRefund: false
+          IncludeSubscription: true
+          IncludeSupport: true
+          IncludeTax: true
+          IncludeUpfront: true
+          UseAmortized: false
+          UseBlended: false
+        TimePeriod:
+          Start: !Ref AWS::NoValue
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: !Ref BudgetThreshold
+            ThresholdType: PERCENTAGE
+            NotificationState: ALARM
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref NukeBudgetSNS
+  BudgetOverageTrigger:
+    Type: AWS::Events::Rule
+    Properties:
+      EventPattern:
+        source:
+          - "aws.budgets"
+        detail-type:
+          - "Budgets Budget Notification"
+        detail:
+          notificationType:
+            - "ACTUAL"
+          comparisonOperator:
+            - "GREATER_THAN"
+          threshold:
+            - !Ref BudgetThreshold
+          budgetName:
+            - !Ref NukeBudget
+      Targets:
+        - Arn: !Ref NukeStepFunction
+          Id: NukeStepFunctionTarget
   NukeAccountCleanserPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -96,7 +165,7 @@ Resources:
       RoleName: !Ref NukeCleanserRoleName
       Description: Nuke Auto account cleanser role for Dev/Sandbox accounts
       MaxSessionDuration: 7200
-      Tags: 
+      Tags:
         - Key: privileged
           Value: 'true'
         - Key: DoNotNuke
@@ -197,7 +266,7 @@ Resources:
                 Action: organizations:ListAccountsForParent
                 Resource: "*"
         -
-          PolicyName: S3BucketReadOnly 
+          PolicyName: S3BucketReadOnly
           PolicyDocument:
             Version: 2012-10-17
             Statement:
@@ -210,7 +279,7 @@ Resources:
                   - !Sub arn:aws:s3:::${NukeS3Bucket}
                   - !Sub arn:aws:s3:::${NukeS3Bucket}/*
         -
-          PolicyName: SNSPublishPolicy 
+          PolicyName: SNSPublishPolicy
           PolicyDocument:
             Version: 2012-10-17
             Statement:
@@ -338,7 +407,7 @@ Resources:
                   {
                           echo "  Account Cleansing Process Failed;"
                           echo    ""
-                          
+
                           echo "  ----------------------------------------------------------------"
                           echo "  Summary of the process:"
                           echo "  ----------------------------------------------------------------"
@@ -355,8 +424,8 @@ Resources:
                           echo "  ################# Failed Nuke Process - Exiting ###################"
                           echo    ""
                   } >> fail_email_template.txt
-                - | 
-                  if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ]; then 
+                - |
+                  if [ "$CODEBUILD_BUILD_SUCCEEDING" = "0" ]; then
                     echo " Couldn't process Nuke Cleanser - Exiting " >> fail_email_template.txt
                     cat error_log.txt >> fail_email_template.txt
                     aws sns publish --topic-arn $Publish_TopicArn --message file://fail_email_template.txt --subject "Nuke Account Cleanser Failed in account $account_id and region $NukeTargetRegion"
@@ -365,7 +434,7 @@ Resources:
                 - sleep 120
                 - LOG_STREAM_NAME=$CODEBUILD_LOG_PATH;
                 - CURR_TIME_UTC=$(date -u)
-                - | 
+                - |
                   if [ -z "${LOG_STREAM_NAME}" ]; then
                     echo "Couldn't find the log stream for log events";
                     exit 0;
@@ -389,7 +458,7 @@ Resources:
                   {
                           echo "  Account Cleansing Process Completed;"
                           echo    ""
-                          
+
                           echo "  ------------------------------------------------------------------"
                           echo "  Summary of the process:"
                           echo "  ------------------------------------------------------------------"
@@ -507,7 +576,7 @@ Resources:
     Properties:
       Bucket: !Ref NukeS3Bucket
       PolicyDocument:
-        Version: '2012-10-17' 
+        Version: '2012-10-17'
         Statement:
           - Sid: ForceSSLOnlyAccess
             Effect: Deny
